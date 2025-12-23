@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>Комикс Анри</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; }
+        #loader {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; color: #d4af37; display: flex; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 100;
+            font-family: monospace; font-size: 20px; transition: opacity 1s;
+        }
+        #btn {
+            margin-top: 20px; padding: 10px 30px; border: 2px solid #d4af37; 
+            background: transparent; color: #d4af37; font-size: 20px; cursor: pointer; display: none;
+        }
+        /* Управление */
+        #ui { position: absolute; bottom: 20px; width: 100%; text-align: center; pointer-events: none; z-index: 10; }
+        .cam-btn { pointer-events: auto; background: rgba(50,0,0,0.8); color: #d4af37; border: 1px solid #d4af37; padding: 15px; border-radius: 50%; font-size: 20px; margin: 0 10px; cursor: pointer; }
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <div id="status">Связь с GitHub...</div>
+        <button id="btn" onclick="start()">ОТКРЫТЬ</button>
+    </div>
+
+    <div id="ui">
+        <button class="cam-btn" onclick="controls.dollyIn(1.1)">+</button>
+        <button class="cam-btn" onclick="resetCam()">👁</button>
+        <button class="cam-btn" onclick="controls.dollyOut(1.1)">-</button>
+    </div>
+
+    <script src="https://unpkg.com/three@0.128.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.9.1/gsap.min.js"></script>
+
+    <script>
+        // ==========================================
+        // 👇 ВПИШИ СЮДА СВОЙ ЛОГИН GITHUB (ТОЧНО!)
+        // ==========================================
+        const USERNAME = "anri-sila007"; 
+        const REPO_NAME = "comic";      // Если назвал репозиторий иначе, поменяй тут
+        // ==========================================
+
+        let scene, camera, renderer, controls;
+        let bookGroup, coverPivot, pagesMesh;
+        let comicTextures = [];
+        let currentPageIndex = 0;
+        let isOpen = false;
+
+        // Материалы
+        const matLeather = new THREE.MeshStandardMaterial({ color: 0x5c0a0a, roughness: 0.7 });
+        const matGold = new THREE.MeshStandardMaterial({ color: 0xd4af37, roughness: 0.3, metalness: 0.8 });
+        const matPaper = new THREE.MeshStandardMaterial({ color: 0xffffff });
+        let pagesMats = [matPaper, matPaper, matPaper, matPaper, matPaper, matPaper];
+
+        // 1. АВТОМАТИЧЕСКИЙ ПОИСК ФАЙЛОВ НА GITHUB
+        const status = document.getElementById('status');
+        const btn = document.getElementById('btn');
+
+        async function fetchImages() {
+            const apiUrl = `https://api.github.com/repos/${USERNAME}/${REPO_NAME}/contents`;
+            try {
+                const response = await fetch(apiUrl);
+                const data = await response.json();
+                
+                // Фильтруем только картинки (jpg, png, jpeg)
+                const imageFiles = data.filter(file => 
+                    file.name.match(/\.(jpg|jpeg|png|gif)$/i)
+                );
+
+                if (imageFiles.length === 0) {
+                    status.innerText = "Картинки не найдены. Загрузи их в репозиторий!";
+                    return;
+                }
+
+                status.innerText = `Найдено страниц: ${imageFiles.length}. Загрузка...`;
+
+                // Загружаем текстуры
+                const texLoader = new THREE.TextureLoader();
+                let loaded = 0;
+                const tempTextures = [];
+
+                imageFiles.forEach((file, index) => {
+                    // Используем download_url от GitHub
+                    texLoader.load(file.download_url, (tex) => {
+                        tex.center.set(0.5, 0.5);
+                        tex.rotation = -Math.PI / 2;
+                        tempTextures.push({ name: file.name, tex: tex });
+                        loaded++;
+                        
+                        if(loaded === imageFiles.length) {
+                            // Сортируем по имени файла (чтобы 1.jpg шло перед 2.jpg)
+                            tempTextures.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
+                            comicTextures = tempTextures.map(t => t.tex);
+                            
+                            status.innerText = "Готово!";
+                            btn.style.display = "block";
+                        }
+                    });
+                });
+
+            } catch (error) {
+                status.innerText = "Ошибка! Проверь логин в коде.";
+                console.error(error);
+            }
+        }
+
+        fetchImages();
+
+        function start() {
+            const loader = document.getElementById('loader');
+            gsap.to(loader, { opacity: 0, duration: 1, onComplete: () => loader.style.display = 'none' });
+            init3D();
+            animate();
+        }
+
+        // 2. 3D ДВИЖОК
+        function init3D() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+            scene.fog = new THREE.FogExp2(0x050505, 0.02);
+
+            camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 100);
+            camera.position.set(0, 14, 18);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.maxPolarAngle = Math.PI / 2;
+
+            scene.add(new THREE.AmbientLight(0xffffff, 0.4));
+            const spot = new THREE.SpotLight(0xffaa00, 1.5);
+            spot.position.set(10, 20, 10);
+            spot.castShadow = true;
+            scene.add(spot);
+
+            bookGroup = new THREE.Group();
+            scene.add(bookGroup);
+            const w = 7, h = 10, t = 1.5;
+
+            // Задник
+            const back = new THREE.Mesh(new THREE.BoxGeometry(w, t/4, h), matLeather);
+            back.position.set(w/2, -t/2+t/8, 0);
+            back.castShadow = true;
+            bookGroup.add(back);
+
+            // Страницы
+            pagesMesh = new THREE.Mesh(new THREE.BoxGeometry(w-0.2, t*0.7, h-0.2), pagesMats);
+            pagesMesh.position.set(w/2, 0, 0);
+            pagesMesh.castShadow = true;
+            pagesMesh.name = "pages";
+            bookGroup.add(pagesMesh);
+
+            // Корешок
+            const spine = new THREE.Mesh(new THREE.BoxGeometry(t, t, h+0.2), matLeather);
+            bookGroup.add(spine);
+
+            // Крышка
+            coverPivot = new THREE.Group();
+            coverPivot.position.set(-t/2, t/2, 0);
+            bookGroup.add(coverPivot);
+            
+            const front = new THREE.Mesh(new THREE.BoxGeometry(w, t/4, h), matLeather);
+            front.position.set(w/2 + t/2, 0, 0);
+            front.castShadow = true;
+            front.name = "cover";
+            coverPivot.add(front);
+
+            // Декор А
+            const A = new THREE.Mesh(new THREE.BoxGeometry(3, 0.1, 1), matGold);
+            A.position.set(w/2+t/2, 0.2, 0);
+            coverPivot.add(A);
+
+            updatePage();
+
+            window.addEventListener('click', onClick);
+            window.addEventListener('resize', onResize);
+        }
+
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+
+        function onClick(event) {
+            if (event.target.tagName === 'BUTTON') return;
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObjects(scene.children, true);
+
+            if (intersects.length > 0) {
+                const name = intersects[0].object.name;
+                
+                if (name === 'cover') {
+                    isOpen = !isOpen;
+                    gsap.to(coverPivot.rotation, { z: isOpen ? -Math.PI * 0.95 : 0, duration: 1.5, ease: "power2.inOut" });
+                    gsap.to(bookGroup.rotation, { x: isOpen ? 0.3 : 0, duration: 1.5 });
+                }
+                
+                if (name === 'pages' && isOpen && comicTextures.length > 0) {
+                    currentPageIndex++;
+                    if (currentPageIndex >= comicTextures.length) currentPageIndex = 0;
+                    gsap.fromTo(pagesMesh.position, {y: -0.1}, {y: 0, duration: 0.2});
+                    updatePage();
+                }
+            }
+        }
+
+        function updatePage() {
+            if (comicTextures.length > 0) {
+                const tex = comicTextures[currentPageIndex];
+                pagesMats[2] = new THREE.MeshStandardMaterial({ map: tex });
+                pagesMesh.material = pagesMats;
+            }
+        }
+
+        window.resetCam = function() {
+            gsap.to(camera.position, {x:0, y:14, z:18, duration: 1});
+        }
+
+        function onResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
